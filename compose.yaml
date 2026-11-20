@@ -1,0 +1,7 @@
+services:
+  sticker-importer:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./backups:/app/backups
