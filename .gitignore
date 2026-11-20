@@ -3,7 +3,7 @@
 .env.*
 !.env.example
 
-# Pack metadata backups
+# Legacy local backups (no longer generated)
 backups/
 
 # Python bytecode and virtual environments

@@ -43,10 +43,7 @@ use a dotenv loader instead. (The Docker option below handles `.env` directly.)
 
 ```bash
 cp .env.example .env
-mkdir -p backups
 # Edit .env first; keep it secret
-# On Linux, if you use Docker with the unprivileged container user:
-sudo chown 10001:10001 backups
 docker compose up -d --build
 docker compose logs -f sticker-importer
 ```
@@ -58,7 +55,7 @@ docker compose logs -f sticker-importer
 - Uses a deterministic shortcode derived from Telegram's `file_unique_id` to
   detect imports. Imports from the same Telegram file twice are idempotent.
 - Updates the existing personal sticker pack instead of overwriting its other
-  image entries. Writes local JSON metadata backups *before* each update.
+  image entries. Pack metadata lives on Matrix; no local volume is needed.
 - Optional modern room pack mirrors imports, letting clients that implement
   Matrix's `m.image_pack.rooms` use them across all chats.
 - Personal account packs are legacy compatibility behavior; Matrix v1.19's
@@ -86,7 +83,42 @@ docker compose logs -f sticker-importer
 - `M_NOT_FOUND` on upload: check homeserver URL or reverse proxy media routes.
 - Not visible in Sable: refresh Sable, check whether your version reads
   `im.ponies.user_emotes`; use the recommended private-room mode if needed.
-- Do not place `.env` or `backups/` in a public repository.
+- Do not place `.env` in a public repository.
+
+## Tests and container publishing
+
+Run tests locally after installing the dependencies:
+
+```bash
+python -m unittest discover -v
+```
+
+GitHub Actions tests Python 3.12 and 3.13 on pull requests targeting `main`
+and pushes to `main`. After the tests pass, it builds and smoke-tests the
+container using dummy credentials. Only pushes to `main` publish to GHCR:
+
+- `ghcr.io/kaoplo/telegram-sticker-exporter-to-matrix:latest`
+- `ghcr.io/kaoplo/telegram-sticker-exporter-to-matrix:sha-<full-commit-sha>`
+
+The image name follows the repository name automatically (lowercase).
+Publishing uses the built-in `GITHUB_TOKEN` with `packages: write`; no registry
+secret or bot credentials are needed in CI. Enable GitHub Actions in the
+repository. Organization policies must allow package publishing. A manual
+workflow run performs checks without publishing.
+
+To run a published image with your local configuration:
+
+```bash
+docker run -d --name sticker-importer --restart unless-stopped --env-file .env \
+  ghcr.io/kaoplo/telegram-sticker-exporter-to-matrix:latest
+```
+
+Run only one importer for a given Telegram bot token. For private GHCR packages,
+authenticate to GHCR before pulling, or change the package visibility to public.
+
+Local metadata backups were removed: they only retained one prior version,
+had no restore command, and required a writable bind mount. Existing `backups/`
+files remain ignored and can be archived or deleted separately.
 
 See: https://spec.matrix.org/ and
 https://github.com/matrix-org/matrix-spec-proposals/blob/main/proposals/2545-emotes.md

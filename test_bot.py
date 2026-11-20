@@ -1,8 +1,10 @@
+import io
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
+from PIL import Image
 
 # Never load real credentials or contact a real server in regression tests.
 with patch.dict(os.environ, {
@@ -11,6 +13,7 @@ with patch.dict(os.environ, {
     "MATRIX_HOMESERVER": "https://matrix.example.org",
     "MATRIX_USER_ID": "@test:example.org",
     "MATRIX_ACCESS_TOKEN": "test-token",
+    "MATRIX_PACK_ROOM_ID": "",
 }):
     import bot
 
@@ -76,6 +79,66 @@ class MatrixResponseTests(unittest.IsolatedAsyncioTestCase):
                 self.response = httpx.Response(200, json=payload)
                 with self.assertRaisesRegex(ValueError, "invalid MXC URI"):
                     await self.api.upload(b"png")
+
+
+class StickerTests(unittest.TestCase):
+    def test_conversion_preserves_dimensions_and_transparency(self):
+        source = io.BytesIO()
+        Image.new("RGBA", (32, 16), (255, 0, 0, 0)).save(source, "WEBP", lossless=True)
+        png, width, height = bot.to_png(source.getvalue())
+        self.assertEqual((width, height), (32, 16))
+        with Image.open(io.BytesIO(png)) as image:
+            self.assertEqual(image.format, "PNG")
+            self.assertEqual(image.getpixel((0, 0))[3], 0)
+
+    def test_pack_update_preserves_existing_data_without_mutating_input(self):
+        old = {"images": {"existing": {"url": "mxc://example.org/old"}},
+               "pack": {"display_name": "Custom", "usage": ["emoticon"]},
+               "custom": {"keep": True}}
+        result = bot.updated_pack(old, "new", {"url": "mxc://example.org/new"})
+        self.assertEqual(result["images"]["existing"], old["images"]["existing"])
+        self.assertEqual(result["pack"]["display_name"], "Custom")
+        self.assertEqual(result["pack"]["usage"], ["emoticon", "sticker"])
+        self.assertEqual(result["custom"], {"keep": True})
+        self.assertNotIn("new", old["images"])
+        self.assertEqual(old["pack"]["usage"], ["emoticon"])
+
+
+class ImportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_personal_import_preserves_pack_and_duplicate_skips_upload(self):
+        api = AsyncMock()
+        api.get_account_data.return_value = {"images": {"old": {"url": "mxc://host/old"}}}
+        api.upload.return_value = "mxc://host/new"
+        with patch.object(bot, "MATRIX_PACK_ROOM_ID", ""):
+            self.assertEqual(await bot.install_sticker(api, "new", b"png", 32, 16, "Sticker"),
+                             ("mxc://host/new", True))
+            event_type, pack = api.put_account_data.call_args.args
+            self.assertEqual(event_type, bot.PERSONAL_PACK_TYPE)
+            self.assertIn("old", pack["images"])
+            self.assertEqual(pack["images"]["new"]["info"]["size"], 3)
+            api.get_account_data.return_value = pack
+            api.upload.reset_mock()
+            api.put_account_data.reset_mock()
+            self.assertEqual(await bot.install_sticker(api, "new", b"png", 32, 16, "Sticker"),
+                             ("mxc://host/new", False))
+            api.upload.assert_not_awaited()
+            api.put_account_data.assert_not_awaited()
+
+    async def test_room_import_reuses_media_and_preserves_other_enabled_rooms(self):
+        api = AsyncMock()
+        api.get_account_data.side_effect = [
+            {}, {"rooms": {"!other:host": {"existing": {}}}}
+        ]
+        api.get_room_pack.return_value = {"images": {"new": {"url": "mxc://host/reused"}}}
+        with patch.object(bot, "MATRIX_PACK_ROOM_ID", "!stickers:host"):
+            result = await bot.install_sticker(api, "new", b"png", 32, 16, "Sticker")
+        self.assertEqual(result, ("mxc://host/reused", True))
+        api.upload.assert_not_awaited()
+        api.put_room_pack.assert_awaited_once()
+        event_type, enabled = api.put_account_data.call_args.args
+        self.assertEqual(event_type, bot.ENABLED_PACKS_TYPE)
+        self.assertEqual(enabled["rooms"]["!other:host"], {"existing": {}})
+        self.assertEqual(enabled["rooms"]["!stickers:host"], {bot.PACK_KEY: {}})
 
 
 if __name__ == "__main__":

@@ -1,0 +1,87 @@
+name: Test and publish container
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Serialize main builds so an older run cannot overwrite a newer latest tag.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Python ${{ matrix.python }} tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Check dependencies
+        run: python -m pip check
+      - name: Run tests
+        run: python -m unittest discover -v
+
+  container:
+    name: Build, verify, and publish image
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set image name
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: echo "IMAGE=ghcr.io/${REPOSITORY,,}" >> "$GITHUB_ENV"
+      - name: Build image
+        run: |
+          docker build \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --tag "$IMAGE:sha-$GITHUB_SHA" \
+            --tag "$IMAGE:latest" .
+      - name: Smoke-test image as container user
+        run: |
+          docker run --rm \
+            -e TELEGRAM_BOT_TOKEN=test-token \
+            -e TELEGRAM_USER_ID=1 \
+            -e MATRIX_HOMESERVER=https://matrix.example.org \
+            -e MATRIX_USER_ID=@test:example.org \
+            -e MATRIX_ACCESS_TOKEN=test-token \
+            --entrypoint python "$IMAGE:sha-$GITHUB_SHA" \
+            -c 'import os, bot; assert os.getuid() != 0; assert bot.updated_pack({}, "test", {"url": "mxc://example.org/test"})["images"]["test"]["url"] == "mxc://example.org/test"'
+      - name: Log in to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        # Official Docker login action, pinned as in GitHub's GHCR guide.
+        uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          docker push "$IMAGE:sha-$GITHUB_SHA"
+          docker push "$IMAGE:latest"

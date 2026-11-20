@@ -13,7 +13,6 @@ import io
 import json
 import logging
 import os
-from pathlib import Path
 from urllib.parse import quote
 
 import httpx
@@ -42,7 +41,6 @@ MATRIX_HOMESERVER = required_env("MATRIX_HOMESERVER").rstrip("/")
 MATRIX_USER_ID = required_env("MATRIX_USER_ID")
 MATRIX_ACCESS_TOKEN = required_env("MATRIX_ACCESS_TOKEN")
 MATRIX_PACK_ROOM_ID = os.environ.get("MATRIX_PACK_ROOM_ID", "").strip()
-BACKUP_DIR = Path(os.environ.get("BACKUP_DIR", "./backups"))
 
 if not MATRIX_HOMESERVER.startswith("https://") and os.environ.get("ALLOW_HTTP") != "1":
     raise SystemExit("MATRIX_HOMESERVER must be https:// (set ALLOW_HTTP=1 only for trusted local testing)")
@@ -137,16 +135,6 @@ class MatrixAPI:
             )
 
 
-def backup(event_type: str, data: dict) -> None:
-    # Contains only pack metadata, not access tokens. Keep the folder private.
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    filename = BACKUP_DIR / (event_type.replace(".", "_") + ".json")
-    tmp = filename.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    tmp.replace(filename)
-
-
 def make_shortcode(file_unique_id: str) -> str:
     return "tg_" + hashlib.sha256(file_unique_id.encode("utf-8")).hexdigest()[:20]
 
@@ -201,15 +189,12 @@ async def install_sticker(api: MatrixAPI, shortcode: str, png: bytes,
         sticker = {"url": mxc, "body": description,
                    "info": {"mimetype": "image/png", "w": width,
                             "h": height, "size": len(png)}}
-        backup(PERSONAL_PACK_TYPE, personal)
         await api.put_account_data(PERSONAL_PACK_TYPE,
                                    updated_pack(personal, shortcode, sticker))
 
         if MATRIX_PACK_ROOM_ID:
-            backup("room_image_pack", room_pack)
             await api.put_room_pack(updated_pack(room_pack, shortcode, sticker))
             enabled = await api.get_account_data(ENABLED_PACKS_TYPE)
-            backup(ENABLED_PACKS_TYPE, enabled)
             new_enabled = json.loads(json.dumps(enabled))
             rooms = new_enabled.setdefault("rooms", {})
             if not isinstance(rooms, dict):
