@@ -3,3 +3,10 @@ services:
     build: .
     restart: unless-stopped
     env_file: .env
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 3m

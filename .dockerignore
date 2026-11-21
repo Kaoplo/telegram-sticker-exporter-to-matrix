@@ -1,5 +1,10 @@
 # Only runtime sources are needed to build the image.
 **
 !Dockerfile
-!requirements.txt
-!bot.py
+!pyproject.toml
+!uv.lock
+!README.md
+!src/
+!src/**
+**/__pycache__/
+**/*.py[cod]
